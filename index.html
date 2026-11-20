@@ -63,6 +63,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:16px/1
       <button class="btn" id="flip" hidden>Kameraváltás</button>
       <button class="btn rec" id="rec" hidden><span class="dot"></span><span id="recLabel">Felvétel</span></button>
       <button class="btn" id="save" hidden>Mentés</button>
+      <button class="btn" id="mic" aria-pressed="false" hidden>Csett hangra</button>
       <label class="btn" for="file" id="pick">Videóból</label>
       <input class="vh" id="file" type="file" accept="video/*">
     </div>
@@ -79,7 +80,7 @@ const PALETTES = [
   {name:'Zöld', sw:'#46e35a', c:[.92,1,.8, .5,1,.35, .1,.68,.16, 0,.14,.05], tint:[.4,1,.35]},
   {name:'Lila', sw:'#b45cff', c:[1,.88,1, .85,.42,1, .5,.12,.85, .12,0,.2], tint:[.7,.35,1]}
 ];
-const st = {pal:0, mirror:false, mode:'demo', ready:false, lastVT:-1, lastDet:0, fps:30, recording:null, blob:null};
+const st = {pal:0, mirror:false, mode:'demo', ready:false, lastVT:-1, lastDet:0, fps:30, recording:null, blob:null, lit:true, level:1, flash:0, lastSnap:0};
 const setStatus = t => { statusEl.textContent = t; };
 
 /* ---------- WebGL ---------- */
@@ -178,7 +179,7 @@ function step(dt, T) {
 const BONES = [0,1,1,2,2,3,3,4,0,5,5,6,6,7,7,8,5,9,9,10,10,11,11,12,9,13,13,14,14,15,15,16,13,17,0,17,17,18,18,19,19,20];
 const TIPS = [4,8,12,16,20], PALM = [0,5,9,13,17];
 let hands = [];
-function ingest(list, dt) {
+function ingest(list, dt, now) {
   const used = new Set();
   for (const h of hands) h.seen = false;
   for (const q of list) {
@@ -190,16 +191,51 @@ function ingest(list, dt) {
       const kk = Math.min(.9, .5 + bd / (S * 2));
       for (let i = 0; i < 42; i++) { const nv = best.p[i] + (q[i] - best.p[i]) * kk; best.v[i] += ((nv - best.p[i]) / Math.max(dt, 1 / 120) - best.v[i]) * .5; best.p[i] = nv; }
       best.S += (S - best.S) * .5; best.seen = true;
+      if (now && gestureSnap(best, q, S, now)) snap('mozdulat');
     } else {
-      const h = {p: Float32Array.from(q), v: new Float32Array(42), a: 0, seen: true, S, pow: 1, acc: new Float32Array(4)};
+      const h = {p: Float32Array.from(q), v: new Float32Array(42), a: 0, seen: true, S, pow: 1, boost: 0, hist: [], acc: new Float32Array(4)};
       hands.push(h); used.add(h);
     }
   }
 }
 const rnd = Math.random;
+
+/* snap: thumb tip (4) pressed to middle tip (12), then within ~0.3 s they fly apart while the middle finger folds toward the palm */
+function gestureSnap(h, q, S, t) {
+  const d412 = Math.hypot(q[8] - q[24], q[9] - q[25]) / S, d12w = Math.hypot(q[24] - q[0], q[25] - q[1]) / S;
+  const hist = h.hist; hist.push({t, d412, d12w});
+  while (hist.length && t - hist[0].t > 400) hist.shift();
+  if (d412 < .6) return false;
+  for (const e of hist) if (e.d412 < .32 && t - e.t < 320 && e.d12w - d12w > .22) { hist.length = 0; return true; }
+  return false;
+}
+function palmOf(h) { let x = 0, y = 0; for (const j of PALM) { x += h.p[j*2]; y += h.p[j*2+1]; } return [x / 5, y / 5]; }
+function burst(h) {
+  const S = h.S, [cx, cy] = palmOf(h);
+  for (let i = 0; i < 280; i++) {
+    const b = (rnd() * 21 | 0) * 2, u = rnd(), x = h.p[BONES[b]*2] + (h.p[BONES[b+1]*2] - h.p[BONES[b]*2]) * u, y = h.p[BONES[b]*2+1] + (h.p[BONES[b+1]*2+1] - h.p[BONES[b]*2+1]) * u;
+    const an = Math.atan2(y - cy, x - cx) + (rnd() - .5) * 1.2, sp = (1.2 + rnd() * 3) * S;
+    add(x, y, Math.cos(an) * sp, Math.sin(an) * sp - (.8 + rnd()) * S, .35 + rnd() * .5, (.4 + rnd() * .55) * S, 0, S);
+  }
+  for (let i = 0; i < 110; i++) { const an = rnd() * 6.283, sp = (2.5 + rnd() * 5) * S; add(cx, cy, Math.cos(an) * sp, Math.sin(an) * sp - 1.5 * S, .6 + rnd() * .9, Math.max(3, S * (.035 + rnd() * .05)), 2, S); }
+  h.boost = 1;
+}
+function puff(h) {
+  const S = h.S;
+  for (let i = 0; i < 46; i++) { const t = TIPS[rnd() * 5 | 0]; add(h.p[t*2] + (rnd() - .5) * S * .5, h.p[t*2+1] - rnd() * S * .4, (rnd() - .5) * S * .8, -(.4 + rnd() * .8) * S, 1.1 + rnd() * .9, (.5 + rnd() * .6) * S, 1, S); }
+  for (let i = 0; i < 26; i++) { const t = TIPS[rnd() * 5 | 0]; add(h.p[t*2], h.p[t*2+1], (rnd() - .5) * S, -(.6 + rnd() * 1.4) * S, .5 + rnd() * .7, Math.max(2.5, S * .03), 2, S); }
+}
+function snap(src) {
+  const t = performance.now(); if (t - st.lastSnap < 650) return; st.lastSnap = t;
+  st.lit = !st.lit;
+  const hs = hands.filter(h => h.a > .3);
+  if (st.lit) { hs.forEach(burst); st.flash = 1; } else hs.forEach(puff);
+  st.hold = t + 2000; setStatus(st.lit ? `Csett! Lángra kapott (${src})` : `Csett! Kialudt (${src})`);
+}
+
 function emit(h, dt) {
-  const a = h.a * h.pow; if (a < .02) return;
-  const p = h.p, v = h.v, S = h.S;
+  const a = h.a * h.pow * st.level * (1 + 1.6 * h.boost); if (a < .02) return;
+  const p = h.p, v = h.v, S = h.S * (1 + .35 * h.boost);
   const at = (i0, i1, u) => [p[i0*2] + (p[i1*2] - p[i0*2]) * u, p[i0*2+1] + (p[i1*2+1] - p[i0*2+1]) * u, v[i0*2] + (v[i1*2] - v[i0*2]) * u, v[i0*2+1] + (v[i1*2+1] - v[i0*2+1]) * u];
   h.acc[0] += dt * a * 1100;
   while (h.acc[0] >= 1) { h.acc[0]--; const b = (rnd() * 21 | 0) * 2, [x, y, vx, vy] = at(BONES[b], BONES[b+1], rnd()), r = S * .17 * Math.sqrt(rnd()), an = rnd() * 6.283;
@@ -265,7 +301,7 @@ function detect(now) {
   }
   const dt = st.lastDet ? (now - st.lastDet) / 1000 : 1 / 30; st.lastDet = now;
   const f = fit(), list = (r.landmarks || []).map(lm => { const q = new Array(42); lm.forEach((pt, i) => { q[i*2] = f.x + (st.mirror ? 1 - pt.x : pt.x) * f.w; q[i*2+1] = f.y + pt.y * f.h; }); return q; });
-  ingest(list, dt);
+  ingest(list, dt, now);
   st.handCount = list.length;
 }
 
@@ -289,9 +325,13 @@ function frame(now) {
   resize();
   const W = cv.width, H = cv.height;
   const hasVid = st.mode !== 'demo' && video.readyState >= 2;
-  if (st.mode === 'demo') { const q = demoHand(T, W, H); ingest([q], dt); }
+  if (st.mode === 'demo') { const q = demoHand(T, W, H); ingest([q], dt, 0); }
   else if (hasVid) detect(now);
+  st.level += ((st.lit ? 1 : 0) - st.level) * Math.min(1, dt * (st.lit ? 12 : 7));
+  st.flash = Math.max(0, st.flash - dt * 2.2);
+  if (an && audioSnap() && hands.some(h => h.a > .5)) snap('hang');
   for (const h of hands) {
+    h.boost = Math.max(0, h.boost - dt * .9);
     h.a = Math.max(0, Math.min(1, h.a + (h.seen ? 7 : -3.5) * dt));
     let o = 0; for (const t of TIPS) o += Math.hypot(h.p[t*2] - h.p[0], h.p[t*2+1] - h.p[1]); o /= 5 * h.S;
     const target = .55 + .45 * Math.min(1, Math.max(0, (o - 1.2) / .75));
@@ -304,8 +344,8 @@ function frame(now) {
   lights.fill(0); let maxL = 0;
   hands.slice().sort((a, b) => b.a - a.a).slice(0, 2).forEach((h, i) => {
     let cx = 0, cy = 0; for (const j of PALM) { cx += h.p[j*2]; cy += h.p[j*2+1]; }
-    const fl = .82 + .18 * Math.sin(T * 13 + i) * Math.sin(T * 7.3 + i * 2), w = h.a * h.pow * .95 * fl;
-    lights.set([cx / 5, cy / 5 - h.S * .4, h.S * 2.6, w * .6], i * 4); maxL = Math.max(maxL, w);
+    const fl = .82 + .18 * Math.sin(T * 13 + i) * Math.sin(T * 7.3 + i * 2), w = h.a * (h.pow * .95 * fl * st.level + st.flash * 1.6);
+    lights.set([cx / 5, cy / 5 - h.S * .4, h.S * (2.6 + st.flash * 2.5), w * .6], i * 4); maxL = Math.max(maxL, w);
   });
 
   gl.viewport(0, 0, W, H);
@@ -345,7 +385,7 @@ requestAnimationFrame(frame);
 const sws = $('#sws');
 sws.innerHTML = PALETTES.map((p, i) => `<button class="sw" role="radio" aria-checked="${i === 0}" aria-label="${p.name}" title="${p.name}" style="--c:${p.sw}" data-i="${i}"></button>`).join('');
 sws.addEventListener('click', e => { const b = e.target.closest('.sw'); if (!b) return; st.pal = +b.dataset.i; sws.querySelectorAll('.sw').forEach(x => x.setAttribute('aria-checked', x === b)); });
-const camBtn = $('#camBtn'), flipBtn = $('#flip'), recBtn = $('#rec'), saveBtn = $('#save'), recLabel = $('#recLabel'), hint = $('#hint');
+const micBtn = $('#mic'), camBtn = $('#camBtn'), flipBtn = $('#flip'), recBtn = $('#rec'), saveBtn = $('#save'), recLabel = $('#recLabel'), hint = $('#hint');
 $('#toggle').addEventListener('click', e => { const off = dock.classList.toggle('off'); e.currentTarget.textContent = off ? '+' : '–'; e.currentTarget.setAttribute('aria-expanded', !off); e.currentTarget.setAttribute('aria-label', off ? 'Vezérlők mutatása' : 'Vezérlők elrejtése'); });
 
 /* camera */
@@ -354,7 +394,7 @@ const stopStream = () => { if (stream) { stream.getTracks().forEach(t => t.stop(
 function camFailed(msg) {
   st.camError = msg; setStatus(msg);
   if (st.mode === 'camera') st.mode = 'demo';
-  camBtn.hidden = false; hint.hidden = false; flipBtn.hidden = true; recBtn.hidden = st.mode === 'demo';
+  camBtn.hidden = false; hint.hidden = false; micBtn.hidden = true; flipBtn.hidden = true; recBtn.hidden = st.mode === 'demo';
 }
 async function startCamera() {
   if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return camFailed('A kamerához https cím kell.');
@@ -366,10 +406,12 @@ async function startCamera() {
     return camFailed(e && e.name === 'NotAllowedError' ? 'Nincs kamera-engedély. Koppints a gombra, vagy: Beállítások › Safari › Kamera.' : 'A kamera nem indult: ' + (e && e.message || e));
   }
   if (video.src) { URL.revokeObjectURL(video.src); video.removeAttribute('src'); }
+  stream.getVideoTracks().forEach(tr => tr.addEventListener('ended', () => { if (st.mode === 'camera' && !document.hidden) setTimeout(startCamera, 300); }));
   video.srcObject = stream; video.muted = true; video.loop = false;
   try { await video.play(); } catch (_) {}
   st.mode = 'camera'; st.camError = ''; st.mirror = facing === 'user'; st.lastVT = -1; hands = []; n = 0;
-  camBtn.hidden = true; hint.hidden = true; recBtn.hidden = !canRecord();
+  camBtn.hidden = true; hint.hidden = false; recBtn.hidden = !canRecord(); micBtn.hidden = false;
+  hint.textContent = 'Csettints: kialszik / lángra kap. Koppintás a képre is jó. A „Csett hangra” a mikrofonnal biztosabb.';
   setStatus(st.ready ? 'Élő' : 'Kézkövető még töltődik…');
   try { const devs = await navigator.mediaDevices.enumerateDevices(); flipBtn.hidden = devs.filter(d => d.kind === 'videoinput').length < 2; } catch (_) {}
 }
@@ -386,12 +428,37 @@ $('#file').addEventListener('change', async e => {
   if (video.src) URL.revokeObjectURL(video.src);
   video.src = URL.createObjectURL(file); video.loop = true; video.muted = true;
   st.mode = 'video'; st.mirror = false; st.lastVT = -1; hands = []; n = 0;
-  camBtn.textContent = 'Vissza a kamerához'; camBtn.hidden = false; hint.hidden = true; flipBtn.hidden = true; recBtn.hidden = !canRecord();
+  camBtn.textContent = 'Vissza a kamerához'; camBtn.hidden = false; hint.hidden = true; flipBtn.hidden = true; micBtn.hidden = true; recBtn.hidden = !canRecord();
   setStatus(st.ready ? 'Videó betöltve' : 'Kézkövető még töltődik…');
   try { await video.play(); } catch (_) { setStatus('Koppints a képre a lejátszáshoz.'); }
   e.target.value = '';
 });
-cv.addEventListener('click', () => { if (st.mode !== 'demo' && video.paused) video.play().catch(() => {}); });
+cv.addEventListener('click', () => { if (st.mode === 'video' && video.paused) video.play().catch(() => {}); else snap('koppintás'); });
+
+/* optional: hear the snap (high-passed click well above the room's background level) */
+let actx = null, an = null, abuf = null, mic = null, bgRms = .004;
+function audioSnap() {
+  an.getFloatTimeDomainData(abuf);
+  let pk = 0, sum = 0;
+  for (let i = 0; i < abuf.length; i++) { const v = abuf[i], a = v < 0 ? -v : v; if (a > pk) pk = a; sum += v * v; }
+  const rms = Math.sqrt(sum / abuf.length), hit = pk > .12 && rms > bgRms * 5;
+  bgRms = Math.max(.002, bgRms * .97 + Math.min(rms, bgRms * 3) * .03);
+  return hit;
+}
+micBtn.addEventListener('click', async () => {
+  if (mic) { mic.getTracks().forEach(tr => tr.stop()); mic = null; an = null; micBtn.setAttribute('aria-pressed', 'false'); setStatus('Hangfigyelés kikapcsolva'); st.hold = performance.now() + 1500; return; }
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const resumed = actx.resume();
+    mic = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false}});
+    await resumed;
+    const src = actx.createMediaStreamSource(mic), hp = actx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 1800;
+    an = actx.createAnalyser(); an.fftSize = 1024; abuf = new Float32Array(an.fftSize);
+    src.connect(hp); hp.connect(an);
+    micBtn.setAttribute('aria-pressed', 'true'); setStatus('Figyelek – csettints!'); st.hold = performance.now() + 2000;
+  } catch (e) { mic = null; an = null; setStatus('Mikrofon nem elérhető: ' + (e && (e.name === 'NotAllowedError' ? 'nincs engedély' : e.message) || e)); st.hold = performance.now() + 3000; }
+});
 
 /* recording: canvas → mp4 (Safari) / webm, then share sheet or download */
 function canRecord() { return !!(window.MediaRecorder && cv.captureStream); }
@@ -401,7 +468,9 @@ recBtn.addEventListener('click', () => {
   if (st.recording) { st.recording.stop(); return; }
   const mime = pickMime(), chunks = [];
   let rec;
-  try { rec = new MediaRecorder(cv.captureStream(30), mime ? {mimeType: mime, videoBitsPerSecond: 8e6} : undefined); }
+  const rs = cv.captureStream(30);
+  if (mic) mic.getAudioTracks().forEach(tr => rs.addTrack(tr));
+  try { rec = new MediaRecorder(rs, mime ? {mimeType: mime, videoBitsPerSecond: 8e6} : undefined); }
   catch (e) { setStatus('A felvétel ebben a böngészőben nem megy.'); return; }
   rec.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
   rec.onstop = () => {

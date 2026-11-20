@@ -4,4 +4,5 @@
 
 - Kézkövetés: [MediaPipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker) (Apache 2.0), a `mp/` mappában helyben
 - Tűz: saját WebGL2 részecskerendszer
+- Csettintés: kialszik / lángra kap (mozdulatból, opcionálisan a csett hangjából is; koppintás is működik)
 - Minden a készüléken fut, semmi nem megy fel szerverre
